@@ -33,7 +33,10 @@ use risc0_zkvm_methods::multi_test::{MultiTestSpec, SYS_MULTI_TEST};
 use risc0_zkvm_platform::{
     fileno,
     memory::{self, SYSTEM},
-    syscall::{bigint, sys_bigint, sys_log, sys_read, sys_read_words, sys_write},
+    syscall::{
+        bigint, sys_bigint, sys_log, sys_read, sys_read_words, sys_write,
+        sys_untrusted_mod_inv, sys_untrusted_mod_sqrt, sys_untrusted_mod_pow,
+    },
     PAGE_SIZE,
 };
 
@@ -288,6 +291,27 @@ fn main() {
             let a = &AlignTest1::new(54) as *const _;
             let b = &AlignTest1::new(60) as *const _;
             assert_eq!(PAGE_SIZE, b as usize - a as usize);
-        }
+        },
+        MultiTestSpec::ModInv { x, modulus } => {
+            let mut result = [0u32; bigint::WIDTH_WORDS];
+            unsafe {
+                sys_untrusted_mod_inv(result.as_mut_ptr(), &x, &modulus);
+            }
+            env::commit_slice(&result);
+        },
+        MultiTestSpec::ModSqrt { x, modulus, quadratic_nonresidue } => {
+            let mut result = [0u32; bigint::WIDTH_WORDS];
+            unsafe {
+                sys_untrusted_mod_sqrt(result.as_mut_ptr(), &x, &modulus, &quadratic_nonresidue);
+            }
+            env::commit_slice(&result);
+        },
+        MultiTestSpec::ModPow { x, y, modulus } => {
+            let mut result = [0u32; bigint::WIDTH_WORDS];
+            unsafe {
+                sys_untrusted_mod_pow(result.as_mut_ptr(), &x, &y, &modulus);
+            }
+            env::commit_slice(&result);
+        },
     }
 }

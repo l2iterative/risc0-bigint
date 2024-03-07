@@ -76,6 +76,20 @@ pub enum MultiTestSpec {
         y: [u32; bigint::WIDTH_WORDS],
         modulus: [u32; bigint::WIDTH_WORDS],
     },
+    ModInv {
+        x: [u32; bigint::WIDTH_WORDS],
+        modulus: [u32; bigint::WIDTH_WORDS],
+    },
+    ModSqrt {
+        x: [u32; bigint::WIDTH_WORDS],
+        modulus: [u32; bigint::WIDTH_WORDS],
+        quadratic_nonresidue: [u32; bigint::WIDTH_WORDS],
+    },
+    ModPow {
+        x: [u32; bigint::WIDTH_WORDS],
+        y: [u32; bigint::WIDTH_WORDS],
+        modulus: [u32; bigint::WIDTH_WORDS],
+    },
     BusyLoop {
         /// Busy loop until the guest has run for at least this number of cycles
         cycles: u32,

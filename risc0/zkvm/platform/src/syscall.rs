@@ -134,6 +134,9 @@ pub mod nr {
     declare_syscall!(pub SYS_WRITE);
     declare_syscall!(pub SYS_VERIFY);
     declare_syscall!(pub SYS_VERIFY_INTEGRITY);
+    declare_syscall!(pub SYS_UNTRUSTED_MOD_INV);
+    declare_syscall!(pub SYS_UNTRUSTED_MOD_SQRT);
+    declare_syscall!(pub SYS_UNTRUSTED_MOD_POW);
 }
 
 impl SyscallName {
@@ -778,4 +781,96 @@ pub unsafe extern "C" fn sys_verify_integrity(claim_digest: *const [u32; DIGEST_
 #[cfg(not(feature = "export-syscalls"))]
 extern "C" {
     pub fn sys_alloc_aligned(nwords: usize, align: usize) -> *mut u8;
+}
+
+/// Obtain an untrusted modular inverse.
+///
+/// A cooperative prover will return the modular inverse if it exists. If the modular inverse
+/// does not exist (i.e., the provided input is zero), it returns zero.
+///
+/// Returning zero is sufficient since the result is untrusted and needs to be verified anyway,
+/// and returning zero as a modular inverse makes sure that verification cannot succeed.
+///
+/// # Safety
+///
+/// `result`, `x`, and `modulus` must be aligned and dereferenceable.
+#[cfg(feature = "export-syscalls")]
+#[no_mangle]
+pub unsafe extern "C" fn sys_untrusted_mod_inv(
+    result: *mut u32,
+    x: *const [u32; bigint::WIDTH_WORDS],
+    modulus: *const [u32; bigint::WIDTH_WORDS],
+) {
+    let _ = unsafe {
+        syscall_2(
+            nr::SYS_UNTRUSTED_MOD_INV,
+            result,
+            bigint::WIDTH_WORDS,
+            x as u32,
+            modulus as u32,
+        );
+    };
+}
+
+/// Obtain an untrusted modular sqrt.
+///
+/// A cooperative prover will need to do the following:
+/// - if x has a square root, write the square root and return a0 = 0
+/// - if x does not have a square root, compute the square root of x * quadratic_nonresidue,
+///   and write this square root back and return a0 = 1
+///
+/// The code only works for a prime modulus. When p = 3 mod 4, we can simply use modpow, but
+/// when p = 1 mod 4, we use the Tonelli–Shanks algorithm.
+///
+/// # Safety
+///
+/// `result`, `x`, `modulus`, and `quadratic_nonresidue` must be aligned and dereferenceable.
+/// `quadratic_nonresidue` is
+#[cfg(feature = "export-syscalls")]
+#[no_mangle]
+pub unsafe extern "C" fn sys_untrusted_mod_sqrt(
+    result: *mut u32,
+    x: *const [u32; bigint::WIDTH_WORDS],
+    modulus: *const [u32; bigint::WIDTH_WORDS],
+    quadratic_nonresidue: *const [u32; bigint::WIDTH_WORDS],
+) -> u32 {
+    let Return(a0, _) = unsafe {
+        syscall_3(
+            nr::SYS_UNTRUSTED_MOD_SQRT,
+            result,
+            bigint::WIDTH_WORDS,
+            x as u32,
+            modulus as u32,
+            quadratic_nonresidue as u32,
+        )
+    };
+    a0
+}
+
+/// Obtain an untrusted modular pow
+///
+/// A cooperative prover will power x by y under the modulus.
+/// If x = 0, y = 0, we define 0^0 = 1, following the common practice.
+///
+/// # Safety
+///
+/// `result`, `x`, `y`, and `modulus` must be aligned and dereferenceable.
+#[cfg(feature = "export-syscalls")]
+#[no_mangle]
+pub unsafe extern "C" fn sys_untrusted_mod_pow(
+    result: *mut u32,
+    x: *const [u32; bigint::WIDTH_WORDS],
+    y: *const [u32; bigint::WIDTH_WORDS],
+    modulus: *const [u32; bigint::WIDTH_WORDS],
+) {
+    unsafe {
+        syscall_3(
+            nr::SYS_UNTRUSTED_MOD_POW,
+            result,
+            bigint::WIDTH_WORDS,
+            x as u32,
+            y as u32,
+            modulus as u32,
+        );
+    };
 }

@@ -216,6 +216,153 @@ fn rsa_compat() {
     run_test(MultiTestSpec::RsaCompat);
 }
 
+mod untrusted_mod {
+    use crate::{ExecutorEnv, ExecutorImpl, ExitCode};
+    use crypto_bigint::{Encoding, U256};
+    use risc0_zkvm_methods::multi_test::MultiTestSpec;
+    use risc0_zkvm_methods::MULTI_TEST_ELF;
+    use risc0_zkvm_platform::syscall::bigint;
+
+    fn bigint_to_arr(num: &U256) -> [u32; bigint::WIDTH_WORDS] {
+        let mut arr: [u32; bigint::WIDTH_WORDS] = bytemuck::cast(num.to_le_bytes());
+        for x in arr.iter_mut() {
+            *x = x.to_le();
+        }
+        arr
+    }
+
+    #[test]
+    fn sys_untrusted_mod_inv() {
+        let input = MultiTestSpec::ModInv {
+            x: bigint_to_arr(&U256::from_be_hex(
+                "07c2f92f04164646510924457b23928223b35f1f021af17be32b025f586217dc",
+            )),
+            modulus: bigint_to_arr(&U256::from_be_hex(
+                "d1920f8c41d42e9c0a29fce42fe6de1727ed343dc6e405b12ec47bc6f80aa503",
+            )),
+        };
+
+        let env = ExecutorEnv::builder()
+            .write(&input)
+            .unwrap()
+            .build()
+            .unwrap();
+        let mut exec = ExecutorImpl::from_elf(env, MULTI_TEST_ELF).unwrap();
+        let session = exec.run().unwrap();
+        assert_eq!(session.exit_code, ExitCode::Halted(0));
+        assert_eq!(
+            session.journal.unwrap().bytes.as_slice(),
+            &U256::from_be_hex("72ece179ff9567cda1062442d7c5992c0a3399dcb0e4ff506572eacd4d11fa47")
+                .to_le_bytes(),
+        );
+    }
+
+    #[test]
+    fn sys_untrusted_mod_sqrt_mod4_3() {
+        let input = MultiTestSpec::ModSqrt {
+            x: bigint_to_arr(&U256::from_be_hex(
+                "3c9afe06330c714b7b3bed2900318dc241047f33bc7aff6362015545aa110b29",
+            )),
+            modulus: bigint_to_arr(&U256::from_be_hex(
+                "d1920f8c41d42e9c0a29fce42fe6de1727ed343dc6e405b12ec47bc6f80aa503",
+            )),
+            quadratic_nonresidue: bigint_to_arr(&U256::from_be_hex(
+                "0000000000000000000000000000000000000000000000000000000000000002",
+            )),
+        };
+
+        let env = ExecutorEnv::builder()
+            .write(&input)
+            .unwrap()
+            .build()
+            .unwrap();
+        let mut exec = ExecutorImpl::from_elf(env, MULTI_TEST_ELF).unwrap();
+        let session = exec.run().unwrap();
+        assert_eq!(session.exit_code, ExitCode::Halted(0));
+
+        let byte_slice = session.journal.unwrap().bytes;
+        assert!(
+            &byte_slice
+                == &U256::from_be_hex(
+                    "c9cf165d3dbde855b920d89eb4c34b950439d51ec4c914354b9979679fa88d27"
+                )
+                .to_le_bytes()
+                || &byte_slice
+                    == &U256::from_be_hex(
+                        "07c2f92f04164646510924457b23928223b35f1f021af17be32b025f586217dc"
+                    )
+                    .to_le_bytes(),
+        );
+    }
+
+    #[test]
+    fn sys_untrusted_mod_sqrt_mod4_1() {
+        let input = MultiTestSpec::ModSqrt {
+            x: bigint_to_arr(&U256::from_be_hex(
+                "92de16a216d49e1df405f7bc5add1aa13615bbe34f660a3ad642cad9841dafda",
+            )),
+            modulus: bigint_to_arr(&U256::from_be_hex(
+                "9c05a20b8181ed923eed45dca7da02ec8ddf329c3eceb1a687cc78a0c74df725",
+            )),
+            quadratic_nonresidue: bigint_to_arr(&U256::from_be_hex(
+                "0000000000000000000000000000000000000000000000000000000000000002",
+            )),
+        };
+
+        let env = ExecutorEnv::builder()
+            .write(&input)
+            .unwrap()
+            .build()
+            .unwrap();
+        let mut exec = ExecutorImpl::from_elf(env, MULTI_TEST_ELF).unwrap();
+        let session = exec.run().unwrap();
+        assert_eq!(session.exit_code, ExitCode::Halted(0));
+
+        let byte_slice = session.journal.unwrap().bytes;
+        assert!(
+            &byte_slice
+                == &U256::from_be_hex(
+                    "9442a8dc7d6ba74bede421972cb6706a6a2bd37d3cb3c02aa4a176416eebdf49"
+                )
+                .to_le_bytes()
+                || &byte_slice
+                    == &U256::from_be_hex(
+                        "07c2f92f04164646510924457b23928223b35f1f021af17be32b025f586217dc"
+                    )
+                    .to_le_bytes(),
+        );
+    }
+
+    #[test]
+    fn sys_untrusted_mod_pow() {
+        let input = MultiTestSpec::ModPow {
+            x: bigint_to_arr(&U256::from_be_hex(
+                "07c2f92f04164646510924457b23928223b35f1f021af17be32b025f586217dc",
+            )),
+            y: bigint_to_arr(&U256::from_be_hex(
+                "36bbc46ba121345f0ab917c522178ad5bc170fe04e4f6ba50c7a877504d20907",
+            )),
+            modulus: bigint_to_arr(&U256::from_be_hex(
+                "d1920f8c41d42e9c0a29fce42fe6de1727ed343dc6e405b12ec47bc6f80aa503",
+            )),
+        };
+
+        let env = ExecutorEnv::builder()
+            .write(&input)
+            .unwrap()
+            .build()
+            .unwrap();
+        let mut exec = ExecutorImpl::from_elf(env, MULTI_TEST_ELF).unwrap();
+        let session = exec.run().unwrap();
+        assert_eq!(session.exit_code, ExitCode::Halted(0));
+        assert_eq!(
+            session.journal.unwrap().bytes.as_slice(),
+            &U256::from_be_hex("92eb8124e157658ca0b456fc1d56a601320ee54c4a6d92b5c4f0be8357451a17")
+                .to_le_bytes()
+        );
+    }
+}
+
 #[test]
 fn bigint_accel() {
     let cases = testutils::generate_bigint_test_cases(&mut rand::thread_rng(), 10);

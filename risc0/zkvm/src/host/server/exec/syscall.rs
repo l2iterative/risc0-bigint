@@ -14,10 +14,18 @@
 
 //! Handlers for two-way private I/O between host and guest.
 
+use std::num::NonZeroU8;
+use std::ops::{Div, MulAssign, ShlAssign};
 use std::{cell::RefCell, cmp::min, collections::HashMap, rc::Rc, str::from_utf8};
 
 use anyhow::{anyhow, bail, Result};
 use bytes::Bytes;
+use crypto_bigint::modular::runtime_mod::{DynResidue, DynResidueParams};
+use crypto_bigint::{Encoding, Integer, NonZero, U256};
+use risc0_zkvm_platform::syscall::bigint;
+use risc0_zkvm_platform::syscall::nr::{
+    SYS_UNTRUSTED_MOD_INV, SYS_UNTRUSTED_MOD_POW, SYS_UNTRUSTED_MOD_SQRT,
+};
 use risc0_zkvm_platform::{
     fileno,
     syscall::{
@@ -114,7 +122,10 @@ impl<'a> SyscallTable<'a> {
             .with_syscall(SYS_VERIFY, sys_verify.clone())
             .with_syscall(SYS_VERIFY_INTEGRITY, sys_verify)
             .with_syscall(SYS_ARGC, Args(env.args.clone()))
-            .with_syscall(SYS_ARGV, Args(env.args.clone()));
+            .with_syscall(SYS_ARGV, Args(env.args.clone()))
+            .with_syscall(SYS_UNTRUSTED_MOD_INV, SysUntrustedMod)
+            .with_syscall(SYS_UNTRUSTED_MOD_SQRT, SysUntrustedMod)
+            .with_syscall(SYS_UNTRUSTED_MOD_POW, SysUntrustedMod);
         for (syscall, handler) in env.slice_io.borrow().inner.iter() {
             let handler = SysSliceIo::new(handler.clone());
             this.inner
@@ -603,5 +614,186 @@ impl<'a> PosixIo<'a> {
             .borrow_mut()
             .write_all(&[msg.as_bytes(), &from_guest, b"\n"].concat())?;
         Ok((0, 0))
+    }
+}
+
+pub(crate) struct SysUntrustedMod;
+
+impl SysUntrustedMod {
+    fn sys_untrusted_mod_inv(
+        &mut self,
+        x: &[u8],
+        modulus: &[u8],
+        to_guest: &mut [u32],
+    ) -> Result<(u32, u32)> {
+        let x = U256::from_le_slice(x);
+        let modulus = U256::from_le_slice(modulus);
+
+        let (res, choice) = x.inv_mod(&modulus);
+        let choice = bool::from(choice);
+
+        if !choice {
+            for i in 0..bigint::WIDTH_WORDS {
+                to_guest[i] = 0;
+            }
+        } else {
+            let limbs = bytemuck::cast::<_, [u32; bigint::WIDTH_WORDS]>(res.to_le_bytes());
+            for i in 0..bigint::WIDTH_WORDS {
+                to_guest[i] = limbs[i];
+            }
+        }
+
+        Ok((0, 0))
+    }
+
+    fn sys_untrusted_mod_sqrt(
+        &mut self,
+        x: &[u8],
+        modulus: &[u8],
+        quadratic_nonresidue: &[u8],
+        to_guest: &mut [u32],
+    ) -> Result<(u32, u32)> {
+        let x = U256::from_le_slice(x);
+        let modulus = U256::from_le_slice(modulus);
+        let quadratic_nonresidue = U256::from_le_slice(quadratic_nonresidue);
+
+        let params = DynResidueParams::new(&modulus);
+
+        let mut a = DynResidue::new(&x, params);
+        let quadratic_nonresidue = DynResidue::new(&quadratic_nonresidue, params);
+
+        let two = NonZero::<U256>::from_u8(NonZeroU8::new(2).unwrap());
+        let four = NonZero::<U256>::from_u8(NonZeroU8::new(4).unwrap());
+
+        let exp_legendre = modulus.wrapping_sub(&U256::ONE).div(&two);
+        let legendre_symbol = a.pow(&exp_legendre);
+
+        let is_quadratic_residue = legendre_symbol.retrieve().eq(&U256::ONE);
+        if !is_quadratic_residue {
+            a.mul_assign(&quadratic_nonresidue);
+        }
+
+        let q_mod_4_is_3 = modulus.rem(&four).eq(&U256::from(3u8));
+        if q_mod_4_is_3 {
+            let exp = modulus.wrapping_add(&U256::ONE).div(&four);
+
+            let res = a.pow(&exp).retrieve();
+            let limbs = bytemuck::cast::<_, [u32; bigint::WIDTH_WORDS]>(res.to_le_bytes());
+            for i in 0..bigint::WIDTH_WORDS {
+                to_guest[i] = limbs[i];
+            }
+        } else {
+            let mut two_adicity = 0u32;
+            let mut trace = modulus.wrapping_sub(&U256::ONE);
+
+            while bool::from(trace.is_even()) {
+                two_adicity += 1;
+                trace = trace.shr(1);
+            }
+
+            let mut omega = a.pow(&trace.shr(1));
+            let mut v = two_adicity;
+            let mut x = omega * a;
+            let mut b = x * omega;
+
+            let mut z = quadratic_nonresidue.pow(&trace);
+
+            while b.ne(&DynResidue::one(params)) {
+                let mut k = 0u32;
+                let mut pow_2_k = U256::from(1u8);
+
+                while b.pow(&pow_2_k).ne(&DynResidue::one(params)) {
+                    k += 1;
+                    pow_2_k.shl_assign(1);
+                }
+
+                let mut exp = U256::ONE;
+                exp.shl_assign((v - k - 1) as usize);
+
+                omega = z.pow(&exp);
+                z = omega.square();
+                b = b * z;
+                x = x * omega;
+                v = k;
+            }
+
+            let res = x.retrieve();
+            let limbs = bytemuck::cast::<_, [u32; bigint::WIDTH_WORDS]>(res.to_le_bytes());
+            for i in 0..bigint::WIDTH_WORDS {
+                to_guest[i] = limbs[i];
+            }
+        }
+
+        if is_quadratic_residue {
+            Ok((0, 0))
+        } else {
+            Ok((1, 0))
+        }
+    }
+
+    fn sys_untrusted_mod_pow(
+        &mut self,
+        x: &[u8],
+        y: &[u8],
+        modulus: &[u8],
+        to_guest: &mut [u32],
+    ) -> Result<(u32, u32)> {
+        let x = U256::from_le_slice(x);
+        let y = U256::from_le_slice(y);
+        let modulus = U256::from_le_slice(modulus);
+
+        let params = DynResidueParams::new(&modulus);
+        let x = DynResidue::new(&x, params);
+
+        let res = x.pow(&y).retrieve();
+        let limbs = bytemuck::cast::<_, [u32; bigint::WIDTH_WORDS]>(res.to_le_bytes());
+        for i in 0..bigint::WIDTH_WORDS {
+            to_guest[i] = limbs[i];
+        }
+
+        Ok((0, 0))
+    }
+}
+
+impl Syscall for SysUntrustedMod {
+    #[inline]
+    fn syscall(
+        &mut self,
+        syscall: &str,
+        ctx: &mut dyn SyscallContext,
+        to_guest: &mut [u32],
+    ) -> Result<(u32, u32)> {
+        if syscall == SYS_UNTRUSTED_MOD_INV.as_str() {
+            let x_ptr = ctx.load_register(REG_A3);
+            let modulus_ptr = ctx.load_register(REG_A4);
+
+            let x = ctx.load_region(x_ptr, bigint::WIDTH_BYTES as u32)?;
+            let modulus = ctx.load_region(modulus_ptr, bigint::WIDTH_BYTES as u32)?;
+
+            self.sys_untrusted_mod_inv(&x, &modulus, to_guest)
+        } else if syscall == SYS_UNTRUSTED_MOD_SQRT.as_str() {
+            let x_ptr = ctx.load_register(REG_A3);
+            let modulus_ptr = ctx.load_register(REG_A4);
+            let quadratic_residue_ptr = ctx.load_register(REG_A5);
+
+            let x = ctx.load_region(x_ptr, bigint::WIDTH_BYTES as u32)?;
+            let modulus = ctx.load_region(modulus_ptr, bigint::WIDTH_BYTES as u32)?;
+            let quadratic_residue =
+                ctx.load_region(quadratic_residue_ptr, bigint::WIDTH_BYTES as u32)?;
+
+            self.sys_untrusted_mod_sqrt(&x, &modulus, &quadratic_residue, to_guest)
+        } else if syscall == SYS_UNTRUSTED_MOD_POW.as_str() {
+            let x_ptr = ctx.load_register(REG_A3);
+            let y_ptr = ctx.load_register(REG_A4);
+            let modulus_ptr = ctx.load_register(REG_A5);
+
+            let x = ctx.load_region(x_ptr, bigint::WIDTH_BYTES as u32)?;
+            let y = ctx.load_region(y_ptr, bigint::WIDTH_BYTES as u32)?;
+            let modulus = ctx.load_region(modulus_ptr, bigint::WIDTH_BYTES as u32)?;
+
+            self.sys_untrusted_mod_pow(&x, &y, &modulus, to_guest)
+        } else {
+            unreachable!()
+        }
     }
 }
